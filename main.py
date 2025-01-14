@@ -5,20 +5,33 @@ import threading
 import requests
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel,
-    QLineEdit, QTextEdit, QPushButton, QTabWidget, QFileDialog, QMessageBox
+    QLineEdit, QTextEdit, QPushButton, QTabWidget, QMessageBox
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal, QObject
 from bs4 import BeautifulSoup
 import pyperclip
+from openai import OpenAI
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s: %(message)s')
+
+# 스레드 안전한 시그널을 위한 클래스
+class WorkerSignals(QObject):
+    update_summary = pyqtSignal(str, str)
+    update_refined = pyqtSignal(str)
+    error = pyqtSignal(str)
 
 class NewsSummarizerApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("뉴스 요약기")
         self.resize(800, 700)
+        
+        # 시그널 객체 초기화
+        self.signals = WorkerSignals()
+        self.signals.update_summary.connect(self._update_summary_ui)
+        self.signals.update_refined.connect(self._update_refined_summary)
+        self.signals.error.connect(self._show_error)
 
         # 설정 파일 경로
         self.config_path = os.path.expanduser('~/.news_summarizer_config')
@@ -119,7 +132,14 @@ class NewsSummarizerApp(QMainWindow):
             soup = BeautifulSoup(response.text, 'html.parser')
 
             article_texts = []
-            selectors = ['article', 'div.article-content', 'div.content', 'div[class*="article"]', 'div[class*="content"]', 'p']
+            selectors = [
+                'article', 
+                'div.article-content', 
+                'div.content', 
+                'div[class*="article"]', 
+                'div[class*="content"]', 
+                'p'
+            ]
             
             for selector in selectors:
                 for elem in soup.select(selector):
@@ -132,35 +152,106 @@ class NewsSummarizerApp(QMainWindow):
             return article_text[:10000]
         except Exception as e:
             logging.error(f"기사 추출 오류: {e}")
-            QMessageBox.critical(self, "오류", f"기사 추출 중 오류: {e}")
+            self.signals.error.emit(f"기사 추출 중 오류: {e}")
             return ""
 
     def summarize_article(self):
-        api_key = self.api_key_input.text()
-        url = self.url_input.text()
+        try:
+            api_key = self.api_key_input.text()
+            url = self.url_input.text()
+            
+            if not api_key or not url:
+                self.signals.error.emit("API 키와 URL을 입력해주세요")
+                return
+            
+            article_content = self.extract_article_content(url)
+            if not article_content:
+                return
+            
+            client = OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "당신은 심층적이고 객관적인 뉴스 분석 전문가입니다. 기사를 명확하고 전문적으로 요약하고, 깊이 있는 맥락과 인사이트를 제공하세요."
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"""기사를 다음 형식으로 상세히 분석해주세요:
 
-        if not api_key or not url:
-            QMessageBox.critical(self, "오류", "API 키와 URL을 입력해주세요")
-            return
+📄 요약 (5-7줄):
+- 기사의 핵심 내용을 정확하고 간결하게 정리
+- 주요 사실과 주요 등장인물 포함
+- 배경과 맥락을 명확히 설명
 
-        article_content = self.extract_article_content(url)
-        if not article_content:
-            return
+🔍 심층 인사이트 (4-5단락):
+- 기사의 숨겨진 의미와 광범위한 영향 분석
+- 사회적, 경제적, 정치적 맥락에서 해석
+- 예상되는 장기적 결과와 잠재적 파급 효과
+- 관련 트렌드 및 배경 설명
+- 다양한 관점에서의 해석
 
-        # OpenAI API 호출은 예시로 남겨둡니다.
-        self.summary_output.setPlainText("요약 결과를 여기에 표시합니다 (테스트 데이터)")
+분석 대상 기사: {article_content}"""
+                    }
+                ],
+                max_tokens=4000
+            )
+            
+            result = response.choices[0].message.content
+            logging.info(f"API 응답 받음: {len(result)} 자")
+            
+            parts = result.split("🔍 심층 인사이트")
+            summary = parts[0].replace("📄 요약:", "").strip()
+            insights = parts[1].strip() if len(parts) > 1 else "인사이트를 생성하지 못했습니다."
+            
+            self.signals.update_summary.emit(summary, insights)
+        
+        except Exception as e:
+            logging.error(f"요약 생성 오류: {e}")
+            self.signals.error.emit(str(e))
+
+    def _update_summary_ui(self, summary, insights):
+        self.summary_output.setPlainText(summary)
+        self.insights_output.setPlainText(insights)
 
     def refine_summary(self):
-        api_key = self.api_key_input.text()
-        refinement = self.refinement_input.text()
-        current_summary = self.summary_output.toPlainText()
+        try:
+            api_key = self.api_key_input.text()
+            refinement = self.refinement_input.text()
+            current_summary = self.summary_output.toPlainText()
+            
+            if not api_key or not refinement:
+                self.signals.error.emit("API 키와 개선 의견을 입력해주세요")
+                return
+            
+            client = OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "사용자의 요구에 맞춰 뉴스 기사 요약을 세련되고 정확하게 개선하는 AI 어시스턴트입니다."
+                    },
+                    {
+                        "role": "user", 
+                        "content": f"다음 요약을 사용자의 의견에 맞춰 개선해주세요:\n\n현재 요약: {current_summary}\n\n개선 요청: {refinement}"
+                    }
+                ],
+                max_tokens=3000
+            )
+            
+            refined_summary = response.choices[0].message.content
+            self.signals.update_refined.emit(refined_summary)
+        
+        except Exception as e:
+            self.signals.error.emit(str(e))
 
-        if not api_key or not refinement:
-            QMessageBox.critical(self, "오류", "API 키와 개선 의견을 입력해주세요")
-            return
+    def _update_refined_summary(self, refined_summary):
+        self.summary_output.setPlainText(refined_summary)
 
-        # OpenAI API 호출은 예시로 남겨둡니다.
-        self.summary_output.setPlainText("다듬어진 요약 결과를 여기에 표시합니다 (테스트 데이터)")
+    def _show_error(self, message):
+        QMessageBox.critical(self, "오류", message)
 
     def load_config(self):
         try:
