@@ -19,8 +19,8 @@
 
 1. 저장소 클론
     ```bash
-    git clone https://github.com/yourusername/news-summarizer.git
-    cd news-summarizer
+    git clone https://github.com/yourusername/NewsSummarizer.git
+    cd NewsSummarizer
     ```
 
 2. 필요한 패키지 설치
