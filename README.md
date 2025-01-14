@@ -1,5 +1,3 @@
-# NewsSummarizer
-
 # 뉴스 요약기 (News Summarizer)
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
