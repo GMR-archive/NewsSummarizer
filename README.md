@@ -57,7 +57,7 @@
 
 ## 스크린샷
 
-![NS_v1](./screenshot.png)
+![NS_v1](./screenshotNS.png)
 
 ## 🧑‍💻 개발자
 
